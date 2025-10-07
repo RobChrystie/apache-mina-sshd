@@ -12,6 +12,8 @@ import org.apache.sshd.common.kex.BuiltinDHFactories;
 import org.apache.sshd.common.kex.KeyExchange;
 import org.apache.sshd.common.kex.KeyExchangeFactory;
 
+import org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider;
+
 import java.io.FileInputStream;
 import java.security.KeyPair;
 import java.security.KeyStore;
@@ -25,6 +27,10 @@ import java.util.List;
 
 public class Pkcs12SshdServer {
     public static void main(String[] args) throws Exception {
+        SecurityUtils.setFipsMode();
+        Security.addProvider(new BouncyCastleFipsProvider());
+        System.setProperty("org.bouncycastle.fips.approved_only", "true");
+
         int port = 2222;
         KeyStore serverStore = KeyStore.getInstance("PKCS12");
         serverStore.load(new FileInputStream("../server-ec521.p12"), "changeit".toCharArray());

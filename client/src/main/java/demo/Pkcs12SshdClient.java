@@ -6,6 +6,8 @@ import org.apache.sshd.common.util.security.SecurityUtils;
 import org.apache.sshd.client.channel.ChannelExec;
 import org.apache.sshd.client.channel.ClientChannelEvent;
 
+import org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider;
+
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.nio.file.Files;
@@ -16,7 +18,11 @@ import java.util.EnumSet;
 import java.util.concurrent.TimeUnit;
 
 public class Pkcs12SshdClient {
-    public static void main(String[] args) throws Exception {    
+    public static void main(String[] args) throws Exception {
+        SecurityUtils.setFipsMode();
+        Security.addProvider(new BouncyCastleFipsProvider());
+        System.setProperty("org.bouncycastle.fips.approved_only", "true");
+
         String host = "localhost";
         int port = 2222;
         String username = "test";
