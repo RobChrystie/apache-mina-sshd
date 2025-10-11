@@ -10,8 +10,6 @@ import org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.Security;
 import java.util.EnumSet;
@@ -27,7 +25,7 @@ public class Pkcs12SshdClient {
         int port = 2222;
         String username = "test";
         KeyStore ks = KeyStore.getInstance("PKCS12");
-        ks.load(new FileInputStream("../client-ec521.p12"), "changeit".toCharArray());
+        ks.load(new FileInputStream(args[0]), "changeit".toCharArray());
         String alias = ks.aliases().nextElement();
         var key = ks.getKey(alias, "changeit".toCharArray());
         var cert = ks.getCertificate(alias);
