@@ -1,42 +1,163 @@
 #!/usr/bin/env bash
-set -e
+set -e  # portable across shells
 
-PASS=changeit
+PASS="changeit"
+DAYS=365
+ROOT_DIR="ec-certs"
+CA_DIR="${ROOT_DIR}/ca"
 
-echo "🔑 Generating EC P-256 server keypair..."
-openssl ecparam -name prime256v1 -genkey -noout -out server-256.key
-openssl req -new -x509 -key server-256.key -days 365 -subj "/CN=SSHD Server" -out server-256.crt
-openssl pkcs12 -export -name server -inkey server-256.key -in server-256.crt -out server-ec256.p12 -password pass:$PASS
-rm server-256.key server-256.crt
+mkdir -p "${CA_DIR}"
 
-echo "🔑 Generating EC P-384 server keypair..."
-openssl ecparam -name secp384r1 -genkey -noout -out server-384.key
-openssl req -new -x509 -key server-384.key -days 365 -subj "/CN=SSHD Server" -out server-384.crt
-openssl pkcs12 -export -name server -inkey server-384.key -in server-384.crt -out server-ec384.p12 -password pass:$PASS
-rm server-384.key server-384.crt
+# ───────────────────────────────
+# 🏦 Root CA
+# ───────────────────────────────
+echo "🔧 Creating Root CA..."
 
-echo "🔑 Generating EC P-521 server keypair..."
-openssl ecparam -name secp521r1 -genkey -noout -out server-521.key
-openssl req -new -x509 -key server-521.key -days 365 -subj "/CN=SSHD Server" -out server-521.crt
-openssl pkcs12 -export -name server -inkey server-521.key -in server-521.crt -out server-ec521.p12 -password pass:$PASS
-rm server-521.key server-521.crt
+if [[ ! -f "${CA_DIR}/root-ca.key" ]]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "${CA_DIR}/root-ca.key"
+  openssl req -x509 -new -key "${CA_DIR}/root-ca.key" -days 3650 \
+    -subj "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=RootCA/CN=RootCA" \
+    -out "${CA_DIR}/root-ca.pem"
+  echo "✅ Root CA created: ${CA_DIR}/root-ca.pem"
+else
+  echo "ℹ️ Root CA already exists, skipping."
+fi
 
-echo "🔑 Generating EC P-256 client keypair..."
-openssl ecparam -name prime256v1 -genkey -noout -out client-256.key
-openssl req -new -x509 -key client-256.key -days 365 -subj "/CN=SSHD Client" -out client-256.crt
-openssl pkcs12 -export -name client -inkey client-256.key -in client-256.crt -out client-ec256.p12 -password pass:$PASS
-rm client-256.key client-256.crt
+# ───────────────────────────────
+# 🛠 EC Certificate Generator
+# ───────────────────────────────
+generate_cert() {
+  local name=$1
+  local curve=$2
+  local bits=$3
+  local subj_dn=$4
+  local san=$5
 
-echo "🔑 Generating EC P-384 client keypair..."
-openssl ecparam -name secp384r1 -genkey -noout -out client-384.key
-openssl req -new -x509 -key client-384.key -days 365 -subj "/CN=SSHD Client" -out client-384.crt
-openssl pkcs12 -export -name client -inkey client-384.key -in client-384.crt -out client-ec384.p12 -password pass:$PASS
-rm client-384.key client-384.crt
+  local key_dir="${ROOT_DIR}/${name}"
+  mkdir -p "${key_dir}"
 
-echo "🔑 Generating EC P-521 client keypair..."
-openssl ecparam -name secp521r1 -genkey -noout -out client-521.key
-openssl req -new -x509 -key client-521.key -days 365 -subj "/CN=SSHD Client" -out client-521.crt
-openssl pkcs12 -export -name client -inkey client-521.key -in client-521.crt -out client-ec521.p12 -password pass:$PASS
-rm client-521.key client-521.crt
+  echo "🔑 Generating EC ${curve} ${name} keypair..."
+  openssl ecparam -name "${curve}" -genkey -noout -out "${key_dir}/${name}-${bits}.key"
 
-echo "✅ Done."
+  echo "📄 Creating CSR..."
+  openssl req -new -key "${key_dir}/${name}-${bits}.key" \
+    -subj "${subj_dn}" -out "${key_dir}/${name}-${bits}.csr"
+
+  # Optional SAN
+  local san_cfg=""
+  if [[ -n "${san}" ]]; then
+    san_cfg=$(mktemp)
+    cat >"${san_cfg}" <<EOF
+[ v3_req ]
+subjectAltName=${san}
+EOF
+  fi
+
+  echo "🪪 Signing with Root CA..."
+  openssl x509 -req -in "${key_dir}/${name}-${bits}.csr" \
+    -CA "${CA_DIR}/root-ca.pem" -CAkey "${CA_DIR}/root-ca.key" -CAcreateserial \
+    -out "${key_dir}/${name}-${bits}.pem" -days "${DAYS}" -sha256 \
+    ${san_cfg:+-extfile "${san_cfg}" -extensions v3_req}
+
+  echo "💼 Creating PKCS#12 keystore..."
+  openssl pkcs12 -export \
+    -name "${name}" \
+    -inkey "${key_dir}/${name}-${bits}.key" \
+    -in "${key_dir}/${name}-${bits}.pem" \
+    -certfile "${CA_DIR}/root-ca.pem" \
+    -out "${key_dir}/${name}-ec${bits}.p12" \
+    -password pass:${PASS}
+
+  rm -f "${san_cfg:-}"
+  echo "✅ ${name} EC ${bits}-bit certificate complete."
+  echo
+}
+
+# ───────────────────────────────
+# 🛠 RSA Certificate Generator
+# ───────────────────────────────
+generate_rsa_cert() {
+  local name=$1
+  local bits=$2
+  local subj_dn=$3
+  local san=$4
+
+  local key_dir="${ROOT_DIR}/${name}"
+  mkdir -p "${key_dir}"
+
+  echo "🔑 Generating RSA ${bits}-bit ${name} keypair..."
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:${bits} -out "${key_dir}/${name}-rsa${bits}.key"
+
+  echo "📄 Creating CSR..."
+  openssl req -new -key "${key_dir}/${name}-rsa${bits}.key" \
+    -subj "${subj_dn}" -out "${key_dir}/${name}-rsa${bits}.csr"
+
+  local san_cfg=""
+  if [[ -n "${san}" ]]; then
+    san_cfg=$(mktemp)
+    cat >"${san_cfg}" <<EOF
+[ v3_req ]
+subjectAltName=${san}
+EOF
+  fi
+
+  echo "🪪 Signing with Root CA..."
+  openssl x509 -req -in "${key_dir}/${name}-rsa${bits}.csr" \
+    -CA "${CA_DIR}/root-ca.pem" -CAkey "${CA_DIR}/root-ca.key" -CAcreateserial \
+    -out "${key_dir}/${name}-rsa${bits}.pem" -days "${DAYS}" -sha256 \
+    ${san_cfg:+-extfile "${san_cfg}" -extensions v3_req}
+
+  echo "💼 Creating PKCS#12 keystore..."
+  openssl pkcs12 -export \
+    -name "${name}" \
+    -inkey "${key_dir}/${name}-rsa${bits}.key" \
+    -in "${key_dir}/${name}-rsa${bits}.pem" \
+    -certfile "${CA_DIR}/root-ca.pem" \
+    -out "${key_dir}/${name}-rsa${bits}.p12" \
+    -password pass:${PASS}
+
+  rm -f "${san_cfg:-}"
+  echo "✅ ${name} RSA ${bits}-bit certificate complete."
+  echo
+}
+
+# ───────────────────────────────
+# 🌐 Server certificates (with SANs)
+# ───────────────────────────────
+generate_cert "server" "prime256v1" 256 \
+  "/C=US/O=TestingEC/OU=Server/CN=server-prime256v1" \
+  "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+
+generate_cert "server" "secp384r1" 384 \
+  "/C=US/O=TestingEC/OU=Server/CN=server-secp384r1" \
+  "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+
+generate_cert "server" "secp521r1" 521 \
+  "/C=US/O=TestingEC/OU=Server/CN=server-secp521r1" \
+  "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+
+# ───────────────────────────────
+# 👤 Client certificates (no SAN)
+# ───────────────────────────────
+generate_cert "client" "prime256v1" 256 \
+  "/C=US/O=TestingEC/OU=Client/CN=client-prime256v1" ""
+
+generate_cert "client" "secp384r1" 384 \
+  "/C=US/O=TestingEC/OU=Client/CN=client-secp384r1" ""
+
+generate_cert "client" "secp521r1" 521 \
+  "/C=US/O=TestingEC/OU=Client/CN=client-secp521r1" ""
+
+# ───────────────────────────────
+# 🌐 RSA Server Certificates
+# ───────────────────────────────
+generate_rsa_cert "server" 2048 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Server/CN=server.local" "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+generate_rsa_cert "server" 3072 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Server/CN=server.local" "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+generate_rsa_cert "server" 4096 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Server/CN=server.local" "DNS:server.local,DNS:localhost,IP:127.0.0.1"
+
+# 👤 RSA Client Certificates
+generate_rsa_cert "client" 2048 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Client/CN=client.local" ""
+generate_rsa_cert "client" 3072 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Client/CN=client.local" ""
+generate_rsa_cert "client" 4096 "/C=US/ST=CA/L=SF/O=ExampleOrg/OU=Client/CN=client.local" ""
+
+echo "🎉 All EC and RSA certificates generated successfully in '${ROOT_DIR}/'"
